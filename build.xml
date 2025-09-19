@@ -24,6 +24,11 @@
         <fileset dir="${web}/WEB-INF/lib">
             <include name="*.jar"/>
         </fileset>
+        <!-- Ensure core JRE classes are available to the Jasper JDT compiler -->
+        <pathelement path="${java.home}/lib/rt.jar"/>
+        <pathelement path="${java.home}/jre/lib/rt.jar"/>
+        <!-- Ensure the JDK compiler (javac) classes are available when compiler=javac -->
+        <pathelement path="${java.home}/lib/tools.jar"/>
     </path>
 
     <path id="test.lib">
@@ -71,7 +76,8 @@
                 destdir="${web}/WEB-INF/reports"
                 tempdir="${web}/WEB-INF/reports"
                 keepjava="false"
-                xmlvalidation="true">
+                xmlvalidation="true"
+                compiler="net.sf.jasperreports.engine.design.JRJavacCompiler">
             <include name="**/*.jrxml"/>
             <classpath refid="jasper.lib"/>
         </jrc>

@@ -6,18 +6,18 @@ import org.apache.struts.action.ActionForm;
 import org.apache.struts.action.ActionForward;
 import org.apache.struts.action.ActionMapping;
 import org.bahmni.feed.openelis.ObjectMapperRepository;
+import us.mn.state.health.lims.labbridge.service.ResultUpdateService;
+import us.mn.state.health.lims.login.valueholder.UserSessionData;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class UpdateTestResultAction extends Action {
     private final String APPLICATION_JSON = "application/json";
+    private ResultUpdateService resultUpdateService = new ResultUpdateService();
 
     private static class UpdatePayload {
         public String analysisId;
@@ -34,127 +34,40 @@ public class UpdateTestResultAction extends Action {
         }
 
         try {
-            // Get database connection using OpenELIS existing infrastructure
-            Connection conn = us.mn.state.health.lims.hibernate.HibernateUtil.getSession().connection();
-            
-            // First, check if the analysis exists and is in pending status
-            String checkSql = "SELECT a.id, a.status_id, t.description as test_name, s.accession_number " +
-                            "FROM clinlims.analysis a " +
-                            "JOIN clinlims.test t ON a.test_id = t.id " +
-                            "JOIN clinlims.sample_item si ON a.sampitem_id = si.id " +
-                            "JOIN clinlims.sample s ON si.samp_id = s.id " +
-                            "WHERE a.id = ?::numeric AND a.test_id = ?::numeric";
-            
-            PreparedStatement checkStmt = conn.prepareStatement(checkSql);
-            checkStmt.setString(1, payload.analysisId);
-            checkStmt.setString(2, payload.testId);
-            ResultSet checkRs = checkStmt.executeQuery();
-            
-            if (!checkRs.next()) {
-                checkRs.close();
-                checkStmt.close();
-                return writeError(response, HttpServletResponse.SC_NOT_FOUND, "Analysis not found or test ID mismatch");
+            // Get system user ID from session
+            String sysUserId = "1"; // Default system user
+            UserSessionData usd = (UserSessionData) request.getSession().getAttribute("userSessionData");
+            if (usd != null) {
+                sysUserId = String.valueOf(usd.getSystemUserId());
             }
-            
-            String currentStatus = checkRs.getString("status_id");
-            String testName = checkRs.getString("test_name");
-            String accessionNumber = checkRs.getString("accession_number");
-            
-            // Check if analysis is in pending status (status_id = 4 for "Not Tested")
-            if (!"4".equals(currentStatus)) {
-                checkRs.close();
-                checkStmt.close();
-                return writeError(response, HttpServletResponse.SC_BAD_REQUEST, "Analysis is not in pending status. Current status: " + currentStatus);
+
+            // Use the service layer that follows existing UI patterns
+            ResultUpdateService.ResultUpdateResponse serviceResponse = resultUpdateService.updateTestResult(
+                payload.analysisId, 
+                payload.testId, 
+                payload.resultValue, 
+                payload.resultType,
+                sysUserId
+            );
+
+            if (!serviceResponse.success) {
+                return writeError(response, HttpServletResponse.SC_BAD_REQUEST, serviceResponse.message);
             }
-            
-            checkRs.close();
-            checkStmt.close();
-            
-            // Find or create a test_result entry for this test and value
-            String testResultSql = "SELECT id FROM clinlims.test_result WHERE test_id = ?::numeric AND value = ? LIMIT 1";
-            PreparedStatement testResultStmt = conn.prepareStatement(testResultSql);
-            testResultStmt.setString(1, payload.testId);
-            testResultStmt.setString(2, payload.resultValue);
-            ResultSet testResultRs = testResultStmt.executeQuery();
-            
-            String testResultId = null;
-            if (testResultRs.next()) {
-                testResultId = testResultRs.getString("id");
-            } else {
-                // Create a new test_result entry using sequence
-                String insertTestResultSql = "INSERT INTO clinlims.test_result (id, test_id, value, tst_rslt_type, lastupdated) VALUES (nextval('clinlims.test_result_seq'), ?::numeric, ?, ?, NOW()) RETURNING id";
-                PreparedStatement insertTestResultStmt = conn.prepareStatement(insertTestResultSql);
-                insertTestResultStmt.setString(1, payload.testId);
-                insertTestResultStmt.setString(2, payload.resultValue);
-                insertTestResultStmt.setString(3, payload.resultType != null ? payload.resultType : "R");
-                ResultSet insertRs = insertTestResultStmt.executeQuery();
-                if (insertRs.next()) {
-                    testResultId = insertRs.getString("id");
-                }
-                insertRs.close();
-                insertTestResultStmt.close();
-            }
-            testResultRs.close();
-            testResultStmt.close();
-            
-            if (testResultId == null) {
-                return writeError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "Failed to create or find test_result entry");
-            }
-            
-            // Check if a result already exists for this analysis and test_result
-            String checkResultSql = "SELECT id FROM clinlims.result WHERE analysis_id = ?::numeric AND test_result_id = ?::numeric LIMIT 1";
-            PreparedStatement checkResultStmt = conn.prepareStatement(checkResultSql);
-            checkResultStmt.setString(1, payload.analysisId);
-            checkResultStmt.setString(2, testResultId);
-            ResultSet checkResultRs = checkResultStmt.executeQuery();
-            
-            int resultRows = 0;
-            if (checkResultRs.next()) {
-                // Update existing result
-                String updateResultSql = "UPDATE clinlims.result SET value = ?, result_type = ?, lastupdated = NOW() WHERE analysis_id = ?::numeric AND test_result_id = ?::numeric";
-                PreparedStatement updateResultStmt = conn.prepareStatement(updateResultSql);
-                updateResultStmt.setString(1, payload.resultValue);
-                updateResultStmt.setString(2, payload.resultType != null ? payload.resultType : "R");
-                updateResultStmt.setString(3, payload.analysisId);
-                updateResultStmt.setString(4, testResultId);
-                resultRows = updateResultStmt.executeUpdate();
-                updateResultStmt.close();
-            } else {
-                // Insert new result using sequence
-                String insertResultSql = "INSERT INTO clinlims.result (id, analysis_id, test_result_id, value, result_type, lastupdated) VALUES (nextval('clinlims.result_seq'), ?::numeric, ?::numeric, ?, ?, NOW())";
-                PreparedStatement insertResultStmt = conn.prepareStatement(insertResultSql);
-                insertResultStmt.setString(1, payload.analysisId);
-                insertResultStmt.setString(2, testResultId);
-                insertResultStmt.setString(3, payload.resultValue);
-                insertResultStmt.setString(4, payload.resultType != null ? payload.resultType : "R");
-                resultRows = insertResultStmt.executeUpdate();
-                insertResultStmt.close();
-            }
-            checkResultRs.close();
-            checkResultStmt.close();
-            
-            // Update analysis status to "Finalized" (status_id = 6)
-            String updateStatusSql = "UPDATE clinlims.analysis SET status_id = 6::numeric, completed_date = NOW() WHERE id = ?::numeric";
-            PreparedStatement statusStmt = conn.prepareStatement(updateStatusSql);
-            statusStmt.setString(1, payload.analysisId);
-            int statusRows = statusStmt.executeUpdate();
-            statusStmt.close();
-            
-            // Create success response
+
+            // Create success response in the same format as before
             Map<String, Object> resp = new LinkedHashMap<String, Object>();
             resp.put("status", "success");
-            resp.put("message", "Test result updated successfully");
+            resp.put("message", serviceResponse.message);
             
             Map<String, Object> data = new LinkedHashMap<String, Object>();
-            data.put("analysisId", payload.analysisId);
-            data.put("testId", payload.testId);
-            data.put("testName", testName);
-            data.put("accessionNumber", accessionNumber);
-            data.put("resultValue", payload.resultValue);
-            data.put("resultType", payload.resultType != null ? payload.resultType : "R");
-            data.put("testResultId", testResultId);
-            data.put("statusUpdated", statusRows > 0);
-            data.put("rowsAffected", resultRows);
+            data.put("analysisId", serviceResponse.analysisId);
+            data.put("testId", serviceResponse.testId);
+            data.put("testName", serviceResponse.testName);
+            data.put("accessionNumber", serviceResponse.accessionNumber);
+            data.put("resultValue", serviceResponse.resultValue);
+            data.put("resultType", serviceResponse.resultType);
+            data.put("statusUpdated", serviceResponse.statusUpdated);
+            data.put("rowsAffected", serviceResponse.rowsAffected);
             resp.put("data", data);
             
             response.setContentType(APPLICATION_JSON);

@@ -36,6 +36,8 @@ import us.mn.state.health.lims.testresult.valueholder.TestResult;
 import us.mn.state.health.lims.sample.dao.SampleDAO;
 import us.mn.state.health.lims.sample.daoimpl.SampleDAOImpl;
 import us.mn.state.health.lims.common.util.DateUtil;
+import us.mn.state.health.lims.common.util.SystemConfiguration;
+import us.mn.state.health.lims.statusofsample.util.StatusOfSampleUtil;
 
 /**
  * Service layer that wraps the existing UI logic for updating test results
@@ -161,23 +163,27 @@ public class ResultUpdateService {
             // Update sample status to "Testing finished" (3) to match UI behavior
             updateSampleStatusToTestingFinished(analysis, sysUserId);
 
-            // Update analysis status using proper DAO (finalize and set completed date and released date)
+            // Update analysis status to match UI flow - set to "Technical Acceptance" for validation
+            // This follows the exact same pattern as ResultsEntryUpdateAction.java lines 562-563
             Analysis freshAnalysis = new Analysis();
             freshAnalysis.setId(analysisId);
             analysisDAO.getData(freshAnalysis);
             freshAnalysis.setSysUserId(sysUserId);
-            freshAnalysis.finalizeResult();
+            
+            // Set statusId to "Technical Acceptance" like UI validation workflow expects
+            // The validation workflow checks statusId field, not status field
+            freshAnalysis.setStatusId(StatusOfSampleUtil.getStatusID(StatusOfSampleUtil.AnalysisStatus.TechnicalAcceptance));
             freshAnalysis.setCompletedDate(new Date(System.currentTimeMillis()));
-            freshAnalysis.setReleasedDate(new Date(System.currentTimeMillis()));
+            
             // Increment revision like UI does
             freshAnalysis.setRevision(String.valueOf(Integer.parseInt(freshAnalysis.getRevision()) + 1));
             // Set entry date like UI does
             freshAnalysis.setEnteredDate(DateUtil.getNowAsTimestamp());
-            // DO NOT set status field - UI only sets statusId via finalizeResult()
+            
             analysisDAO.updateData(freshAnalysis);
 
             // Build success response
-            ResultUpdateResponse response = new ResultUpdateResponse(true, "Test result updated successfully");
+            ResultUpdateResponse response = new ResultUpdateResponse(true, "Test result updated successfully - requires validation before finalization");
             response.analysisId = analysisId;
             response.testId = testId;
             response.testName = test.getTestName();
@@ -224,27 +230,30 @@ public class ResultUpdateService {
             // Update sample status to "Testing finished" (3) to match UI behavior  
             updateSampleStatusToTestingFinished(analysis, sysUserId);
 
-            // Finalize analysis status
+            // Update analysis status to match UI flow - set to "Technical Acceptance" for validation
             AnalysisDAO analysisDAO = new AnalysisDAOImpl();
             Analysis freshAnalysis = new Analysis();
             freshAnalysis.setId(analysis.getId());
             analysisDAO.getData(freshAnalysis);
             freshAnalysis.setSysUserId(sysUserId);
-            freshAnalysis.finalizeResult();
+            
+            // Set statusId to "Technical Acceptance" like UI validation workflow expects
+            // The validation workflow checks statusId field, not status field
+            freshAnalysis.setStatusId(StatusOfSampleUtil.getStatusID(StatusOfSampleUtil.AnalysisStatus.TechnicalAcceptance));
             freshAnalysis.setCompletedDate(new Date(System.currentTimeMillis()));
-            freshAnalysis.setReleasedDate(new Date(System.currentTimeMillis()));
+            
             // Increment revision like UI does
             freshAnalysis.setRevision(String.valueOf(Integer.parseInt(freshAnalysis.getRevision()) + 1));
             // Set entry date like UI does
             freshAnalysis.setEnteredDate(DateUtil.getNowAsTimestamp());
-            // DO NOT set status field - UI only sets statusId via finalizeResult()
+            
             analysisDAO.updateData(freshAnalysis);
 
             // Build success response with details
             SampleItem si = analysis.getSampleItem();
             Sample sample = si != null ? si.getSample() : null;
 
-            ResultUpdateResponse response = new ResultUpdateResponse(true, "Test result updated successfully");
+            ResultUpdateResponse response = new ResultUpdateResponse(true, "Test result updated successfully - requires validation before finalization");
             response.analysisId = analysis.getId();
             response.testId = test != null ? test.getId() : null;
             response.testName = test != null ? test.getTestName() : null;
@@ -254,8 +263,9 @@ public class ResultUpdateService {
             response.statusUpdated = true;
             response.rowsAffected = 1;
         
-            // Publish atomfeed event for Bahmni synchronization
-            publishAtomfeedEvent(freshAnalysis, "/openelis");
+            // Note: No atomfeed event published for status 3 (Technical Acceptance)
+            // Atomfeed events are only published when results are finalized (status 6)
+            // This matches UI behavior where validation is required before Bahmni sync
         
             return response;
             
@@ -268,7 +278,11 @@ public class ResultUpdateService {
     /**
      * Publish atomfeed event for Bahmni synchronization
      * This ensures REST updates trigger the same atomfeed events as UI updates
-     * Only publishes events for completed/accepted results (matching UI behavior)
+     * Only publishes events for finalized results (status 6) - matching UI behavior
+     * 
+     * Note: This method is no longer called for REST result entry since we now
+     * follow UI flow and set status to 3 (Technical Acceptance) which requires
+     * manual validation before finalization and Bahmni sync.
      */
     private void publishAtomfeedEvent(Analysis analysis, String contextPath) {
         try {

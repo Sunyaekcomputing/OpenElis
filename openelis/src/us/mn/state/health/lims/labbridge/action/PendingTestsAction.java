@@ -18,6 +18,46 @@ public class PendingTestsAction extends Action {
 
     @Override
     public ActionForward execute(ActionMapping mapping, ActionForm form, HttpServletRequest request, HttpServletResponse response) throws Exception {
+        
+        // MANDATORY: accessionNumbers parameter is required
+        String accessionNumbers = request.getParameter("accessionNumbers");
+        
+        if (accessionNumbers == null || accessionNumbers.trim().isEmpty()) {
+            // Return error response - no backward compatibility
+            Map<String, Object> errorPayload = new LinkedHashMap<String, Object>();
+            errorPayload.put("status", "error");
+            errorPayload.put("message", "Parameter 'accessionNumbers' is required. Provide comma-separated accession numbers.");
+            errorPayload.put("data", new ArrayList<>());
+            
+            response.setContentType(APPLICATION_JSON);
+            response.setStatus(HttpServletResponse.SC_BAD_REQUEST); // 400 Bad Request
+            ObjectMapperRepository.objectMapper.writeValue(response.getWriter(), errorPayload);
+            return null;
+        }
+        
+        // Parse and validate accession numbers
+        String[] accessionArray = accessionNumbers.split(",");
+        List<String> validAccessions = new ArrayList<>();
+        
+        for (String accession : accessionArray) {
+            String trimmed = accession.trim();
+            if (!trimmed.isEmpty()) {
+                validAccessions.add(trimmed);
+            }
+        }
+        
+        if (validAccessions.isEmpty()) {
+            Map<String, Object> errorPayload = new LinkedHashMap<String, Object>();
+            errorPayload.put("status", "error");
+            errorPayload.put("message", "No valid accession numbers provided.");
+            errorPayload.put("data", new ArrayList<>());
+            
+            response.setContentType(APPLICATION_JSON);
+            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            ObjectMapperRepository.objectMapper.writeValue(response.getWriter(), errorPayload);
+            return null;
+        }
+
         List<Map<String, Object>> data = new ArrayList<Map<String, Object>>();
 
         String assignedStatusId = getStatusIdBySysName("analysis_status_assigned");
@@ -38,13 +78,15 @@ public class PendingTestsAction extends Action {
             "join test t on t.id = a.test_id " +
             "where a.status_id in (:assignedStatusId, :resultCompletedStatusId, :notTestedStatusId) " +
             "and a.status_id <> :canceledStatusId " +
-            "and a.revision = (select max(a2.revision) from analysis a2 where a2.sampitem_id = a.sampitem_id and a2.test_id = a.test_id)";
+            "and a.revision = (select max(a2.revision) from analysis a2 where a2.sampitem_id = a.sampitem_id and a2.test_id = a.test_id) " +
+            "and s.accession_number in (:accessionNumbers)"; // ALWAYS filtered!
 
         Query q = HibernateUtil.getSession().createSQLQuery(sql);
         q.setInteger("assignedStatusId", Integer.parseInt(assignedStatusId));
         q.setInteger("resultCompletedStatusId", Integer.parseInt(resultCompletedStatusId));
         q.setInteger("notTestedStatusId", Integer.parseInt(notTestedStatusId));
         q.setInteger("canceledStatusId", Integer.parseInt(canceledStatusId));
+        q.setParameterList("accessionNumbers", validAccessions);
 
         @SuppressWarnings("unchecked")
         List<Object[]> rows = q.list();
@@ -69,7 +111,8 @@ public class PendingTestsAction extends Action {
 
         Map<String, Object> payload = new LinkedHashMap<String, Object>();
         payload.put("status", "success");
-        payload.put("message", "");
+        payload.put("message", "Filtered pending tests retrieved successfully");
+        payload.put("count", data.size());
         payload.put("data", data);
 
         response.setContentType(APPLICATION_JSON);

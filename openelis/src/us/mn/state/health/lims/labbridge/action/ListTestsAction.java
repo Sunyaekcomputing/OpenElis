@@ -64,5 +64,3 @@ public class ListTestsAction extends Action {
         return o == null ? "" : String.valueOf(o);
     }
 }
-
-

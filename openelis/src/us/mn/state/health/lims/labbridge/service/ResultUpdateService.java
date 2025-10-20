@@ -173,11 +173,15 @@ public class ResultUpdateService {
             // Set statusId to "Technical Acceptance" like UI validation workflow expects
             // The validation workflow checks statusId field, not status field
             freshAnalysis.setStatusId(StatusOfSampleUtil.getStatusID(StatusOfSampleUtil.AnalysisStatus.TechnicalAcceptance));
-            freshAnalysis.setCompletedDate(new Date(System.currentTimeMillis()));
+            
+            // MATCH UI EXACTLY: Set all the same fields as updateAndAddAnalysisToModifiedList()
+            String currentDateString = DateUtil.convertSqlDateToStringDate(DateUtil.getNowAsSqlDate());
+            freshAnalysis.setStartedDateForDisplay(currentDateString); // UI sets this
+            freshAnalysis.setCompletedDate(DateUtil.convertStringDateToSqlDate(currentDateString));
             
             // Increment revision like UI does
             freshAnalysis.setRevision(String.valueOf(Integer.parseInt(freshAnalysis.getRevision()) + 1));
-            // Set entry date like UI does
+            // Set entry date like UI does (returns java.sql.Timestamp)
             freshAnalysis.setEnteredDate(DateUtil.getNowAsTimestamp());
             
             analysisDAO.updateData(freshAnalysis);
@@ -240,11 +244,15 @@ public class ResultUpdateService {
             // Set statusId to "Technical Acceptance" like UI validation workflow expects
             // The validation workflow checks statusId field, not status field
             freshAnalysis.setStatusId(StatusOfSampleUtil.getStatusID(StatusOfSampleUtil.AnalysisStatus.TechnicalAcceptance));
-            freshAnalysis.setCompletedDate(new Date(System.currentTimeMillis()));
+            
+            // MATCH UI EXACTLY: Set all the same fields as updateAndAddAnalysisToModifiedList()
+            String currentDateString = DateUtil.convertSqlDateToStringDate(DateUtil.getNowAsSqlDate());
+            freshAnalysis.setStartedDateForDisplay(currentDateString); // UI sets this
+            freshAnalysis.setCompletedDate(DateUtil.convertStringDateToSqlDate(currentDateString));
             
             // Increment revision like UI does
             freshAnalysis.setRevision(String.valueOf(Integer.parseInt(freshAnalysis.getRevision()) + 1));
-            // Set entry date like UI does
+            // Set entry date like UI does (returns java.sql.Timestamp)
             freshAnalysis.setEnteredDate(DateUtil.getNowAsTimestamp());
             
             analysisDAO.updateData(freshAnalysis);

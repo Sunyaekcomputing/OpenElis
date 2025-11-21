@@ -7,7 +7,6 @@ import java.util.List;
 import us.mn.state.health.lims.analysis.dao.AnalysisDAO;
 import us.mn.state.health.lims.analysis.daoimpl.AnalysisDAOImpl;
 import us.mn.state.health.lims.analysis.valueholder.Analysis;
-import us.mn.state.health.lims.common.util.SystemConfiguration;
 import us.mn.state.health.lims.dictionary.dao.DictionaryDAO;
 import us.mn.state.health.lims.dictionary.daoimpl.DictionaryDAOImpl;
 import us.mn.state.health.lims.dictionary.valueholder.Dictionary;
@@ -18,7 +17,6 @@ import us.mn.state.health.lims.result.valueholder.Result;
 import us.mn.state.health.lims.result.valueholder.ResultSignature;
 import us.mn.state.health.lims.sample.valueholder.Sample;
 import us.mn.state.health.lims.sampleitem.valueholder.SampleItem;
-import us.mn.state.health.lims.statusofsample.util.StatusOfSampleUtil;
 import us.mn.state.health.lims.systemuser.daoimpl.SystemUserDAOImpl;
 import us.mn.state.health.lims.systemuser.valueholder.SystemUser;
 import us.mn.state.health.lims.test.dao.TestDAO;
@@ -36,14 +34,25 @@ import us.mn.state.health.lims.testresult.valueholder.TestResult;
 import us.mn.state.health.lims.sample.dao.SampleDAO;
 import us.mn.state.health.lims.sample.daoimpl.SampleDAOImpl;
 import us.mn.state.health.lims.common.util.DateUtil;
-import us.mn.state.health.lims.common.util.SystemConfiguration;
 import us.mn.state.health.lims.statusofsample.util.StatusOfSampleUtil;
+import us.mn.state.health.lims.resultlimits.valueholder.ResultLimit;
+import us.mn.state.health.lims.result.action.util.ResultsLoadUtility;
+import us.mn.state.health.lims.samplehuman.dao.SampleHumanDAO;
+import us.mn.state.health.lims.samplehuman.daoimpl.SampleHumanDAOImpl;
+import us.mn.state.health.lims.patient.valueholder.Patient;
+import us.mn.state.health.lims.common.util.StringUtil;
+import us.mn.state.health.lims.labbridge.service.transform.ConfigurableResultValueTransformer;
+import us.mn.state.health.lims.labbridge.service.transform.ResultValueTransformer;
+import us.mn.state.health.lims.labbridge.service.transform.TransformedResult;
 
 /**
  * Service layer that wraps the existing UI logic for updating test results
  * This ensures REST endpoints follow the same business logic as the UI
  */
 public class ResultUpdateService {
+
+    // REST-only transformation hook; defaults to a non-breaking implementation.
+    private final ResultValueTransformer resultValueTransformer = new ConfigurableResultValueTransformer();
 
     public static class ResultUpdateResponse {
         public boolean success;
@@ -108,7 +117,12 @@ public class ResultUpdateService {
                 return new ResultUpdateResponse(false, "Sample not found for analysis");
             }
 
-            // Resolve the appropriate TestResult and normalized value/type based on input
+            // Apply REST-only per-test transformation before resolving value/type.
+            TransformedResult transformed = resultValueTransformer.transform(test, resultValue, resultType);
+            resultValue = transformed.getValue();
+            resultType = transformed.getType();
+
+            // Resolve the appropriate TestResult and normalized value/type based on (possibly transformed) input
             TestResultDAO testResultDAO = new TestResultDAOImpl();
             ResolvedResult rr = resolveTestResultAndValue(test, testResultDAO, resultValue, resultType);
             if (!rr.success) {
@@ -149,6 +163,21 @@ public class ResultUpdateService {
             result.setIsReportable("N"); // Match UI behavior - set to N
             result.setSortOrder("0"); // Match UI behavior - always use 0
             result.setSysUserId(sysUserId);
+
+            // ✅ FIX: Add reference range population (this was missing!)
+            // Get patient for reference range calculation
+            SampleHumanDAO sampleHumanDAO = new SampleHumanDAOImpl();
+            Patient patient = sampleHumanDAO.getPatientForSample(sample);
+
+            // Get result limits (reference ranges) for this test and patient
+            ResultsLoadUtility resultsLoadUtility = new ResultsLoadUtility();
+            ResultLimit resultLimit = resultsLoadUtility.getResultLimitForTestAndPatient(test, patient);
+
+            // Set reference ranges (this is what UI does but REST was missing!)
+            result.setMinNormal(resultLimit.getLowNormal());
+            result.setMaxNormal(resultLimit.getHighNormal());
+            String resultLimitId = resultLimit.getId();
+            result.setResultLimitId(!StringUtil.isNullorNill(resultLimitId) ? Integer.parseInt(resultLimitId) : null);
 
             // Save using proper DAO (this triggers audit trails, validation, etc.)
             if (isNewResult) {
@@ -218,6 +247,25 @@ public class ResultUpdateService {
             result.setResultType(resultType);
             result.setLastupdated(new Timestamp(System.currentTimeMillis()));
             
+            // ✅ FIX: Add reference range population for direct results too
+            // Get patient for reference range calculation
+            SampleHumanDAO sampleHumanDAO = new SampleHumanDAOImpl();
+            SampleItem sampleItem = analysis.getSampleItem();
+            Sample sample = sampleItem != null ? sampleItem.getSample() : null;
+            if (sample != null) {
+                Patient patient = sampleHumanDAO.getPatientForSample(sample);
+                
+                // Get result limits (reference ranges) for this test and patient
+                ResultsLoadUtility resultsLoadUtility = new ResultsLoadUtility();
+                ResultLimit resultLimit = resultsLoadUtility.getResultLimitForTestAndPatient(test, patient);
+                
+                // Set reference ranges (this is what UI does but REST was missing!)
+                result.setMinNormal(resultLimit.getLowNormal());
+                result.setMaxNormal(resultLimit.getHighNormal());
+                String resultLimitId = resultLimit.getId();
+                result.setResultLimitId(!StringUtil.isNullorNill(resultLimitId) ? Integer.parseInt(resultLimitId) : null);
+            }
+            
             // Insert or update existing result for this analysis (if present)
             List existing = resultDAO.getResultsByAnalysis(analysis);
             if (existing != null && !existing.isEmpty()) {
@@ -259,13 +307,13 @@ public class ResultUpdateService {
 
             // Build success response with details
             SampleItem si = analysis.getSampleItem();
-            Sample sample = si != null ? si.getSample() : null;
+            Sample responseSample = si != null ? si.getSample() : null;
 
             ResultUpdateResponse response = new ResultUpdateResponse(true, "Test result updated successfully - requires validation before finalization");
             response.analysisId = analysis.getId();
             response.testId = test != null ? test.getId() : null;
             response.testName = test != null ? test.getTestName() : null;
-            response.accessionNumber = sample != null ? sample.getAccessionNumber() : null;
+            response.accessionNumber = responseSample != null ? responseSample.getAccessionNumber() : null;
             response.resultValue = resultValue;
             response.resultType = resultType;
             response.statusUpdated = true;
